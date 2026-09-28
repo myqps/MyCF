@@ -1003,12 +1003,20 @@ textarea.input { overflow-y:auto; white-space:pre; word-wrap:normal; max-height:
     <div class="note">如果不绑定KV空间，您的凭据将存储在本地浏览器中</div>
 
     <div style="margin-top:8px">
+      <label class="small">账号备注（Alias）<span style="color:#6b7280;font-weight:400">（建议填写，便于区分账号）</span></label>
+      <input id="newAlias" class="input" placeholder="例如: 主账号 / 工作账号 A">
+    </div>
+    <div style="margin-top:8px">
       <label class="small">Cloudflare 账号邮箱</label>
       <input id="newEmail" class="input" placeholder="your@email.com">
     </div>
     <div style="margin-top:8px">
       <label class="small">Cloudflare API 密钥</label>
       <input id="newKey" class="input" placeholder="您的 API 密钥">
+    </div>
+    <div style="margin-top:8px">
+      <label class="small">要管理的 Cloudflare 账号 <span style="color:#6b7280;font-weight:400">（多账号时自动弹出选择）</span></label>
+      <select id="newAccountSelect" class="input"><option value="">验证后自动识别</option></select>
     </div>
 
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
@@ -1023,10 +1031,22 @@ textarea.input { overflow-y:auto; white-space:pre; word-wrap:normal; max-height:
   </div>
 </div>
 
+<div id="accountSelectModal" class="modal">
+  <div class="modal-content">
+    <div class="modal-title">选择要管理的 Cloudflare 账号</div>
+    <div class="small" style="margin-bottom:12px">该邮箱下检测到多个账号，请选择要管理的账号</div>
+    <div id="accountSelectList"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn" style="background:#e5e7eb;color:#111" onclick="document.getElementById('accountSelectModal').style.display='none'">取消</button>
+      <button class="btn" id="confirmAccountSelect">确认选择</button>
+    </div>
+  </div>
+</div>
+
 <div id="batchLoginModal" class="modal">
   <div class="modal-content">
     <div class="modal-title">批量添加账号</div>
-    <div class="small">每行一个账号，格式：邮箱|GlobalApiKey</div>
+    <div class="small">每行一个账号，格式：邮箱|GlobalApiKey，可追加 |AccountId（可选）</div>
     <textarea id="batchLoginInput" class="input" placeholder="user1@example.com|key1&#10;user2@example.com|key2"></textarea>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn" style="background:#e5e7eb;color:#111" onclick="document.getElementById('batchLoginModal').style.display='none'">取消</button>
@@ -1769,7 +1789,7 @@ function renderStaticJS(env) {
   return `(function(){
   function el(id){ return document.getElementById(id); }
   function safeParse(s){ try { return JSON.parse(s); } catch(e){ return null; } }
-  function getActiveCreds(){ return { email: localStorage.getItem('cf_active_email')||'', key: localStorage.getItem('cf_active_key')||'' }; }
+  function getActiveCreds(){ return { email: localStorage.getItem('cf_active_email')||'', key: localStorage.getItem('cf_active_key')||'', accountId: localStorage.getItem('cf_active_account_id')||'' }; }
   (async function(){ if(document.body.dataset.page==='login' && getActiveCreds().email){ try{ const r=await fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'check-features'})}); if(r.ok) location.replace('/workers'); }catch(e){} } })();
   
   function loadSaved(){ try { return JSON.parse(localStorage.getItem('cf_accounts')||'[]'); } catch(e){ return []; } }
@@ -1848,17 +1868,49 @@ function renderStaticJS(env) {
       arr.forEach((a, idx) => {
         const d = document.createElement('div');
         d.className = 'account-row';
-        d.innerHTML = '<div><div style="font-weight:600">'+a.email+'</div><div class="small">添加于 '+(a.added||'')+'</div></div><div><button class="btn" data-idx="'+idx+'">快速登录</button></div>';
+        d.innerHTML = '<div><div style="font-weight:600">'+(a.alias?a.alias:a.email)+'</div><div class="small">'+(a.accountId?'Account ID: '+a.accountId+'<br>':'')+'添加于 '+(a.added||'')+'</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="btn" data-idx="'+idx+'">快速登录</button><button class="btn" data-rm="'+idx+'" style="background:#f43f5e;color:#fff">移除</button></div>';
         cont.appendChild(d);
       });
-      Array.from(cont.querySelectorAll('button')).forEach(btn => {
-        btn.addEventListener('click', function(){ const idx = +this.dataset.idx; const arr = loadSaved(); if (!arr[idx]) return alert('账号不存在'); localStorage.setItem('cf_active_email', arr[idx].email); localStorage.setItem('cf_active_key', arr[idx].key); location.replace('/workers'); });
+      Array.from(cont.querySelectorAll('button[data-idx]')).forEach(btn => {
+        btn.addEventListener('click', function(){ const idx = +this.dataset.idx; const arr = loadSaved(); if (!arr[idx]) return alert('账号不存在'); localStorage.setItem('cf_active_email', arr[idx].email); localStorage.setItem('cf_active_key', arr[idx].key); localStorage.setItem('cf_active_account_id', arr[idx].accountId || ''); localStorage.setItem('cf_accountId', arr[idx].accountId || ''); location.replace('/workers'); });
+      });
+      Array.from(cont.querySelectorAll('button[data-rm]')).forEach(btn => {
+        btn.addEventListener('click', function(){ const idx = +this.dataset.rm; removeSaved(idx); });
       });
     }
 
+    function removeSaved(idx) {
+      if(!confirm('确定要移除此账号吗？')) return;
+      const arr = loadSaved();
+      if (!arr[idx]) return;
+      const c = getActiveCreds();
+      const wasActive = (c.email === arr[idx].email && (c.accountId||'') === (arr[idx].accountId||''));
+      arr.splice(idx, 1);
+      saveAccounts(arr);
+      renderSaved();
+      if (wasActive) { localStorage.removeItem('cf_active_account_id'); localStorage.removeItem('cf_accountId'); }
+    }
+
+    let _pending = null;
+    function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    function finishAddAccount(email, key, alias, accountId, accName) {
+      const arr = loadSaved();
+      const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\\//g, '-');
+      const existIdx = arr.findIndex(x => (x.accountId || x.email) === (accountId || email));
+      if (existIdx !== -1) arr.splice(existIdx, 1);
+      const finalAlias = alias || (accName ? (accName + ' · ' + email) : email);
+      arr.unshift({ email, key, accountId, alias: finalAlias, added: now });
+      saveAccounts(arr);
+      localStorage.setItem('cf_active_email', email);
+      localStorage.setItem('cf_active_key', key);
+      localStorage.setItem('cf_active_account_id', accountId || '');
+      localStorage.setItem('cf_accountId', accountId || '');
+      location.replace('/workers');
+    }
     document.getElementById('verifyBtn').addEventListener('click', async function(){
       const email = el('newEmail').value.trim(); 
       const key = el('newKey').value.trim();
+      const alias = el('newAlias') ? el('newAlias').value.trim() : '';
       if (!email || !key) return alert('请输入邮箱和 API Key');
       
       const r = await fetch('/api', { 
@@ -1869,19 +1921,46 @@ function renderStaticJS(env) {
       let res;
       try { res = await r.json(); } catch(e) { res = await r.text(); }
       
-      if (res && (res.result || (res.success===true))) {
-        const arr = loadSaved();
-        const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\\//g, '-');
-        const existIdx = arr.findIndex(x => x.email === email);
-        if (existIdx !== -1) arr.splice(existIdx, 1);
-        arr.unshift({ email, key, added: now });
-        saveAccounts(arr);
-        localStorage.setItem('cf_active_email', email);
-        localStorage.setItem('cf_active_key', key);
-        location.replace('/workers');
-      } else {
-        alert('验证失败：' + (res && (res.errors||res.message||res.error) || 'unknown'));
+      if (!(res && (res.result || (res.success===true)))) {
+        return alert('验证失败：' + (res && (res.errors||res.message||res.error) || 'unknown'));
       }
+      let accs = [];
+      try {
+        const la = await fetch('/api', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'list-accounts', email, key }) });
+        const lr = await la.json();
+        accs = (lr && lr.result) || [];
+      } catch(e) {}
+      if (!accs.length) return alert('无法获取该邮箱下的 Cloudflare 账号，请检查权限');
+      
+      if (accs.length === 1) {
+        return finishAddAccount(email, key, alias, accs[0].id || accs[0].account_id, accs[0].name || '');
+      }
+      // 多账号：弹出选择框
+      _pending = { email, key, alias, accs };
+      const sel = el('newAccountSelect'); 
+      if (sel) {
+        sel.innerHTML = '';
+        accs.forEach(a => { const opt = document.createElement('option'); opt.value = a.id || a.account_id; opt.textContent = (a.name || '') + ' (' + (a.id || a.account_id) + ')'; sel.appendChild(opt); });
+      }
+      const list = el('accountSelectList');
+      if (list) {
+        list.innerHTML = '';
+        accs.forEach((a, i) => {
+          const id = a.id || a.account_id;
+          const label = document.createElement('label');
+          label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px;border:1px solid rgba(0,0,0,0.05);border-radius:8px;margin-bottom:6px;background:rgba(255,255,255,0.5);cursor:pointer;';
+          label.innerHTML = '<input type="radio" name="accSel" value="'+id+'"'+(i===0?' checked':'')+'><span style="flex:1">'+esc(a.name||'')+' <span class="small">'+esc(id)+'</span></span>';
+          list.appendChild(label);
+        });
+      }
+      el('accountSelectModal').style.display = 'flex';
+    });
+    document.getElementById('confirmAccountSelect').addEventListener('click', function(){
+      const sel = document.querySelector('input[name="accSel"]:checked');
+      if (!sel) return alert('请先选择一个账号');
+      if (!_pending) return;
+      const picked = (_pending.accs || []).find(a => (a.id || a.account_id) === sel.value);
+      finishAddAccount(_pending.email, _pending.key, _pending.alias, sel.value, (picked && picked.name) || '');
     });
 
     document.getElementById('openBatchModalBtn').addEventListener('click', function(){ el('batchLoginModal').style.display='flex'; });
@@ -1895,13 +1974,14 @@ function renderStaticJS(env) {
            const parts = line.split('|');
            if (parts.length >= 2) {
                const email = parts[0].trim(); const key = parts[1].trim();
-               if (email && key) newAccs.push({ email, key, added: now });
+               const accountId = parts[2] ? parts[2].trim() : '';
+               if (email && key) newAccs.push({ email, key, accountId, added: now });
            }
        });
        if (newAccs.length > 0) {
            const current = loadSaved();
            newAccs.forEach(acc => {
-               const idx = current.findIndex(c => c.email === acc.email);
+               const idx = current.findIndex(c => (c.accountId || c.email) === (acc.accountId || acc.email));
                if (idx !== -1) current[idx] = acc; else current.unshift(acc);
            });
            saveAccounts(current); renderSaved(); el('batchLoginModal').style.display='none'; el('batchLoginInput').value = ''; showNotification(\`已导入 \${newAccs.length} 个账号\`);
@@ -1948,7 +2028,7 @@ function renderStaticJS(env) {
             if (kvData.success && kvData.accounts && kvData.accounts.length) {
               const local = loadSaved();
               const merged = [...kvData.accounts];
-              local.forEach(a => { if (!merged.find(x => x.email === a.email)) merged.push(a); });
+              local.forEach(a => { if (!merged.find(x => (x.accountId || x.email) === (a.accountId || a.email))) merged.push(a); });
               localStorage.setItem('cf_accounts', JSON.stringify(merged));
             }
           } catch(e) {}
@@ -1981,14 +2061,14 @@ function renderStaticJS(env) {
       const arr = loadSaved(); const current = getActiveCreds(); const cont = el('accountListContainer'); cont.innerHTML = '';
       if (arr.length === 0) { cont.innerHTML = '<div style="padding:16px;text-align:center;color:#64748b">暂无其他账号</div>'; } else {
         arr.forEach((acc, idx) => {
-          const isActive = acc.email === current.email; const div = document.createElement('div'); div.className = 'acct-row ' + (isActive ? 'acct-active' : '');
-          div.innerHTML = \`<div style="flex:1;cursor:pointer" onclick="switchAccount(\${idx})"><div style="font-weight:600;display:flex;align-items:center">\${escapeHtml(acc.email)}\${isActive ? '<span class="badge">当前</span>' : ''}</div><div class="small" style="margin-bottom:0">\${acc.added || ''}</div></div>\${!isActive ? \`<button class="trash-btn" onclick="removeAccount(\${idx})" title="移除账号">✕</button>\` : ''}\`; cont.appendChild(div);
+          const isActive = (acc.accountId || acc.email) === (current.accountId || current.email); const div = document.createElement('div'); div.className = 'acct-row ' + (isActive ? 'acct-active' : '');
+          div.innerHTML = \`<div style="flex:1;cursor:pointer" onclick="switchAccount(\${idx})"><div style="font-weight:600;display:flex;align-items:center">\${escapeHtml(acc.alias || acc.email)}\${isActive ? '<span class="badge">当前</span>' : ''}</div><div class="small" style="margin-bottom:0">\${acc.accountId ? 'Account ID: ' + escapeHtml(acc.accountId) + '<br>' : ''}\${acc.added || ''}</div></div><button class="trash-btn" onclick="removeAccount(\${idx})" title="移除账号">✕</button>\`; cont.appendChild(div);
         });
       }
       el('accountModal').style.display = 'flex';
     }
-    function switchAccount(idx) { const arr = loadSaved(); if (arr[idx]) { localStorage.setItem('cf_active_email', arr[idx].email); localStorage.setItem('cf_active_key', arr[idx].key); localStorage.removeItem('cf_accountId'); showNotification('正在切换账号...'); setTimeout(() => location.reload(), 500); } }
-    function removeAccount(idx) { if(!confirm('确定要移除此账号吗？')) return; const arr = loadSaved(); arr.splice(idx, 1); saveAccounts(arr); openAccountSwitcher(); }
+    function switchAccount(idx) { const arr = loadSaved(); if (arr[idx]) { localStorage.setItem('cf_active_email', arr[idx].email); localStorage.setItem('cf_active_key', arr[idx].key); localStorage.setItem('cf_active_account_id', arr[idx].accountId || ''); localStorage.setItem('cf_accountId', arr[idx].accountId || ''); showNotification('正在切换账号...'); setTimeout(() => location.reload(), 500); } }
+    function removeAccount(idx) { if(!confirm('确定要移除此账号吗？')) return; const arr = loadSaved(); if (!arr[idx]) return; const c = getActiveCreds(); const wasActive = (c.email === arr[idx].email && (c.accountId||'') === (arr[idx].accountId||'')); arr.splice(idx, 1); saveAccounts(arr); openAccountSwitcher(); if (wasActive) { localStorage.removeItem('cf_active_account_id'); localStorage.removeItem('cf_accountId'); } }
     function closeAccountSwitcher() { el('accountModal').style.display = 'none'; }
 
     function navTo(page) {
@@ -2012,7 +2092,7 @@ function renderStaticJS(env) {
         if (arr.length === 0) { list.innerHTML = '<div style="padding:10px;color:#999">请先在登录页添加账号</div>'; return; }
         arr.forEach((acc, idx) => {
             const div = document.createElement('div'); div.className = 'account-check-item';
-            div.innerHTML = \`<label style="flex:1;cursor:pointer;display:flex;align-items:center"><input type="checkbox" class="batch-acc-chk" value="\${idx}" style="margin-right:8px"><span style="font-size:13px">\${escapeHtml(acc.email)}</span></label>\`; list.appendChild(div);
+            div.innerHTML = \`<label style="flex:1;cursor:pointer;display:flex;align-items:center"><input type="checkbox" class="batch-acc-chk" value="\${idx}" style="margin-right:8px"><span style="font-size:13px">\${escapeHtml(acc.alias || acc.email)}</span></label>\`; list.appendChild(div);
         });
         el('batchEnvList').innerHTML = ''; 
     }
@@ -2382,7 +2462,7 @@ function renderStaticJS(env) {
                     _wFail++; _wFailedAccts.push(acc.email);
                     appendBatchLog(\`❌ \${acc.email}: 获取账户ID失败\`, '#ef4444'); continue;
                 }
-                const accountId = accRes.result[0].id;
+                const accountId = acc.accountId || accRes.result[0].id;
                 creds.accountId = accountId;
 
                 const localBindings = [...bindings];
@@ -2476,10 +2556,10 @@ async function pagesEntry(entry,prefix,out) { if(entry.isFile){const f=await new
 async function pagesZip(file){if(typeof JSZip==='undefined')throw new Error('JSZip 加载失败，请刷新页面');const z=await JSZip.loadAsync(await file.arrayBuffer());const out=[];for(const name of Object.keys(z.files)){const e=z.files[name];if(e.dir)continue;const bytes=await e.async('uint8array');const blob=new Blob([bytes],{type:pagesMime(name,'')});out.push({path:name,file:new File([blob],name,{type:blob.type}),stripRoot:false});}return out;}
 function pagesPath(item){let p=String(item.path||'').split(String.fromCharCode(92)).join('/');while(p.startsWith('/'))p=p.slice(1);if(item.stripRoot){const n=p.indexOf('/');if(n>0)p=p.slice(n+1);}return '/'+p;}
 function initPagesUploadArea(){if(pagesUploadInited)return;const drop=pagesNode('pagesUploadDrop'),folder=pagesNode('pagesFolderInput'),zip=pagesNode('pagesZipInput'),mode=pagesNode('pagesUploadMode');if(!drop||!folder||!zip||!mode)return;pagesUploadInited=true;drop.onclick=function(){(mode.value==='zip'?zip:folder).click();};['dragenter','dragover'].forEach(function(k){drop.addEventListener(k,function(e){e.preventDefault();drop.style.borderColor='#2563eb';});});['dragleave','drop'].forEach(function(k){drop.addEventListener(k,function(e){e.preventDefault();drop.style.borderColor='#cbd5e1';});});drop.addEventListener('drop',async function(e){try{if(mode.value==='zip'){const f=Array.from(e.dataTransfer.files||[]).find(function(x){return String(x.name).toLowerCase().endsWith('.zip');;});if(!f)throw new Error('ZIP 模式请拖入 .zip 文件');pagesSelectedFiles=await pagesZip(f);pagesSummary('ZIP '+f.name);}else{const out=[];const entries=Array.from(e.dataTransfer.items||[]).map(function(x){return x.webkitGetAsEntry&&x.webkitGetAsEntry();}).filter(Boolean);if(entries.length){for(const entry of entries)await pagesEntry(entry,'',out);}else Array.from(e.dataTransfer.files||[]).forEach(function(f){out.push({path:f.webkitRelativePath||f.name,file:f,stripRoot:!!f.webkitRelativePath});});pagesSelectedFiles=out;pagesSummary('拖入文件夹');}}catch(err){showNotification(err.message||String(err),'error');}});folder.onchange=function(){pagesSelectedFiles=Array.from(folder.files||[]).map(function(f){return{path:f.webkitRelativePath||f.name,file:f,stripRoot:!!f.webkitRelativePath};});pagesSummary('选择文件夹');};zip.onchange=async function(){try{if(!zip.files[0])return;pagesSelectedFiles=await pagesZip(zip.files[0]);pagesSummary('ZIP '+zip.files[0].name);}catch(err){showNotification(err.message||String(err),'error');}};}
-function renderPagesBatchPage(){initPagesUploadArea();const list=pagesNode('pagesAccountList');if(!list)return;const accounts=loadSaved();list.innerHTML='';accounts.forEach(function(a,i){const row=document.createElement('div');row.className='account-check-item';row.innerHTML='<label style="display:flex;align-items:center;flex:1;cursor:pointer;font-size:13px"><input type="checkbox" class="pages-acc-chk" value="'+i+'" style="margin-right:8px">'+escapeHtml(a.email)+'</label>';list.appendChild(row);});}
+function renderPagesBatchPage(){initPagesUploadArea();const list=pagesNode('pagesAccountList');if(!list)return;const accounts=loadSaved();list.innerHTML='';accounts.forEach(function(a,i){const row=document.createElement('div');row.className='account-check-item';row.innerHTML='<label style="display:flex;align-items:center;flex:1;cursor:pointer;font-size:13px"><input type="checkbox" class="pages-acc-chk" value="'+i+'" style="margin-right:8px">'+escapeHtml(a.alias||a.email)+'</label>';list.appendChild(row);});}
 window.toggleSelectAllPagesAccounts=function(box){document.querySelectorAll('.pages-acc-chk').forEach(function(x){x.checked=!!box.checked;});};
 async function pagesFiles(){if(!pagesSelectedFiles.length)throw new Error('请先选择文件夹或 ZIP');if(pagesSelectedFiles.length>1000)throw new Error('文件数超过 1000');if(typeof SparkMD5==='undefined')throw new Error('SparkMD5 加载失败，请刷新页面');const result=[],seen=new Set();for(let i=0;i<pagesSelectedFiles.length;i++){const item=pagesSelectedFiles[i],file=item.file,path=pagesPath(item);if(path==='/'||path.includes('/../')||seen.has(path))throw new Error('非法或重复路径：'+path);if(file.size>25*1024*1024)throw new Error('单文件超过 25 MiB：'+path);seen.add(path);const buf=await file.arrayBuffer(),bytes=new Uint8Array(buf);let bin='';for(let p=0;p<bytes.length;p+=0x8000)bin+=String.fromCharCode.apply(null,bytes.subarray(p,Math.min(p+0x8000,bytes.length)));let hashPath=path;if(!hashPath.startsWith('/'))hashPath='/'+hashPath;const assetHasher=new SparkMD5.ArrayBuffer();assetHasher.append(buf);assetHasher.append(new TextEncoder().encode(hashPath).buffer);result.push({path:path,hash:assetHasher.end(),base64:btoa(bin),contentType:pagesMime(path,file.type)});if((i+1)%20===0)pagesLog('已处理 '+(i+1)+'/'+pagesSelectedFiles.length+' 文件','#60a5fa');}return result;}
-async function startPagesBatchDeploy(){const name=String(pagesNode('pagesProjectName').value||'').trim().toLowerCase(),branch=String(pagesNode('pagesBranch').value||'main').trim()||'main',enableCpuLimit=true,checks=Array.from(document.querySelectorAll('.pages-acc-chk:checked'));if(!/^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/.test(name))return showNotification('项目名仅支持小写字母、数字、连字符，长度 2-58','error');if(!checks.length)return showNotification('至少选择一个账号','error');const log=pagesNode('pagesBatchLog');if(log)log.innerHTML='';try{pagesLog('正在读取和 hash 文件…','#93c5fd');const files=await pagesFiles(),accounts=loadSaved();pagesLog('共 '+files.length+' 个文件，开始部署。','#fcd34d');var _pSuccess=0,_pFail=0,_pFailedAccts=[];for(const c of checks){const a=accounts[Number(c.value)];if(!a)continue;const creds={email:a.email,key:a.key};const ars=await api('list-accounts',creds),aid=ars&&ars.result&&ars.result[0]&&ars.result[0].id;if(!aid){pagesLog('✗ '+a.email+'：无法获取 Account ID','#f87171');_pFail++;_pFailedAccts.push(a.email);continue;}const r=await api('deploy-pages-direct',{email:a.email,key:a.key,accountId:aid,projectName:name,branch:branch,enableCpuLimit:enableCpuLimit,cpuMs:300000,files:files});if(r&&r.success){_pSuccess++;pagesLog('✓ '+a.email+'：部署成功','#4ade80');if(r.autoDowngraded){pagesLog('   ⚠️ 免费计划不支持部署CPU限制已略过','#fbbf24');}else{pagesLog('   ✅ 已经成功部署CPU限制','#4ade80');}pagesLog('  '+(r.url||'https://'+name+'.pages.dev'),'#60a5fa');}else{_pFail++;_pFailedAccts.push(a.email);pagesLog('✗ '+a.email+' ['+((r&&r.step)||'unknown')+']：'+((r&&r.error)||'部署失败'),'#f87171');}}pagesLog('全部任务结束。','#fcd34d');pagesLog('总计: '+checks.length+' 个账号，成功: '+_pSuccess+' 个，失败: '+_pFail+' 个','#fbbf24');if(_pFailedAccts.length>0)pagesLog('失败账号: '+_pFailedAccts.join(', '),'#f87171');}catch(e){pagesLog('✗ '+(e.message||String(e)),'#f87171');}}
+async function startPagesBatchDeploy(){const name=String(pagesNode('pagesProjectName').value||'').trim().toLowerCase(),branch=String(pagesNode('pagesBranch').value||'main').trim()||'main',enableCpuLimit=true,checks=Array.from(document.querySelectorAll('.pages-acc-chk:checked'));if(!/^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/.test(name))return showNotification('项目名仅支持小写字母、数字、连字符，长度 2-58','error');if(!checks.length)return showNotification('至少选择一个账号','error');const log=pagesNode('pagesBatchLog');if(log)log.innerHTML='';try{pagesLog('正在读取和 hash 文件…','#93c5fd');const files=await pagesFiles(),accounts=loadSaved();pagesLog('共 '+files.length+' 个文件，开始部署。','#fcd34d');var _pSuccess=0,_pFail=0,_pFailedAccts=[];for(const c of checks){const a=accounts[Number(c.value)];if(!a)continue;const creds={email:a.email,key:a.key};const ars=await api('list-accounts',creds),aid=a.accountId||(ars&&ars.result&&ars.result[0]&&ars.result[0].id);if(!aid){pagesLog('✗ '+a.email+'：无法获取 Account ID','#f87171');_pFail++;_pFailedAccts.push(a.email);continue;}const r=await api('deploy-pages-direct',{email:a.email,key:a.key,accountId:aid,projectName:name,branch:branch,enableCpuLimit:enableCpuLimit,cpuMs:300000,files:files});if(r&&r.success){_pSuccess++;pagesLog('✓ '+a.email+'：部署成功','#4ade80');if(r.autoDowngraded){pagesLog('   ⚠️ 免费计划不支持部署CPU限制已略过','#fbbf24');}else{pagesLog('   ✅ 已经成功部署CPU限制','#4ade80');}pagesLog('  '+(r.url||'https://'+name+'.pages.dev'),'#60a5fa');}else{_pFail++;_pFailedAccts.push(a.email);pagesLog('✗ '+a.email+' ['+((r&&r.step)||'unknown')+']：'+((r&&r.error)||'部署失败'),'#f87171');}}pagesLog('全部任务结束。','#fcd34d');pagesLog('总计: '+checks.length+' 个账号，成功: '+_pSuccess+' 个，失败: '+_pFail+' 个','#fbbf24');if(_pFailedAccts.length>0)pagesLog('失败账号: '+_pFailedAccts.join(', '),'#f87171');}catch(e){pagesLog('✗ '+(e.message||String(e)),'#f87171');}}
 window.startPagesBatchDeploy=startPagesBatchDeploy;
 
 async function refreshPagesManager(){
@@ -2487,7 +2567,7 @@ async function refreshPagesManager(){
   try{
     // 账号可在登录页切换：每次都以当前凭据重新获取 ID，不能复用上一账号缓存。
     const ar=await api('list-accounts');
-    const accountId=ar&&ar.result&&ar.result[0]&&ar.result[0].id;
+    const accountId=getActiveCreds().accountId||(ar&&ar.result&&ar.result[0]&&ar.result[0].id);
     if(accountId)localStorage.setItem('cfaccountId',accountId);
     if(!accountId)throw new Error((ar&&ar.error)||'无法获取当前账号的 Account ID');
     const res=await api('list-pages-projects',{accountId:accountId}); const projects=res&&res.success&&Array.isArray(res.result)?res.result:[];
@@ -2512,7 +2592,7 @@ async function refreshPagesManager(){
 }
 async function deletePagesProject(name,domain){
   if(!confirm('确定删除 Pages 项目「'+name+'」吗？删除全部部署且不可恢复。默认域名：'+domain))return;
-  try{const ar=await api('list-accounts');const accountId=ar&&ar.result&&ar.result[0]&&ar.result[0].id;if(!accountId)throw new Error((ar&&ar.error)||'无法获取当前账号的 Account ID');localStorage.setItem('cfaccountId',accountId);const r=await api('delete-pages-project',{accountId:accountId,projectName:name});if(r&&r.success){showNotification('已删除：'+name);refreshPagesManager();}else showNotification((r&&r.error)||'删除失败','error');}catch(e){showNotification(e.message||String(e),'error');}
+  try{let accountId=getActiveCreds().accountId;if(!accountId){const ar=await api('list-accounts');accountId=ar&&ar.result&&ar.result[0]&&ar.result[0].id;}if(!accountId)throw new Error((ar&&ar.error)||'无法获取当前账号的 Account ID');localStorage.setItem('cfaccountId',accountId);const r=await api('delete-pages-project',{accountId:accountId,projectName:name});if(r&&r.success){showNotification('已删除：'+name);refreshPagesManager();}else showNotification((r&&r.error)||'删除失败','error');}catch(e){showNotification(e.message||String(e),'error');}
 }
 window.refreshPagesManager=refreshPagesManager;window.deletePagesProject=deletePagesProject;
 
@@ -2525,7 +2605,7 @@ window.refreshPagesManager=refreshPagesManager;window.deletePagesProject=deleteP
         el('workersList').innerHTML = '无法获取账户'; 
         return; 
       }
-      const accountId = accounts.result[0].id || accounts.result[0].account_id;
+      const accountId = (getActiveCreds().accountId) || (accounts.result[0].id || accounts.result[0].account_id);
       localStorage.setItem('cf_accountId', accountId);
       const res = await api('list-workers', { accountId });
       if (!res || !res.result) { 
@@ -2651,7 +2731,7 @@ window.refreshPagesManager=refreshPagesManager;window.deletePagesProject=deleteP
     async function deleteWorkerDomain(scriptName, domainId, hostname) { if (!confirm('确定要解除绑定域名 ' + hostname + ' 吗？')) return; const accountId = localStorage.getItem('cf_accountId'); const res = await api('delete-worker-domain', { accountId, scriptName, domainId, hostname }); if (res && res.success) { showNotification('域名解绑成功'); refreshWorkers(); } else { showNotification(res.error || '解绑失败', 'error'); } }
 
     async function updateWorkerMetrics() { try { const usageRes = await api('get-usage-today', { accountId: localStorage.getItem('cf_accountId') }); if (usageRes && usageRes.success && usageRes.data) { const data = usageRes.data; const total = data.total || 0; const workers = data.workers || 0; const pages = data.pages || 0; const percentage = data.percentage || 0; el('metricCount').textContent = \`\${total.toLocaleString()} / 100,000\`; el('metricBar').style.width = \`\${percentage}%\`; el('workersRequests').textContent = workers.toLocaleString(); el('pagesRequests').textContent = pages.toLocaleString(); } else { el('metricCount').textContent = '0 / 100,000'; el('metricBar').style.width = '0%'; el('workersRequests').textContent = '0'; el('pagesRequests').textContent = '0'; } } catch (e) { console.error(e); } }
-    async function editWorker(name){ const accounts = await api('list-accounts'); const accountId = accounts.result?.[0]?.id; const res = await api('get-worker-script', { accountId, scriptName: name }); if (res && res.rawScript !== undefined) { el('createName').value = name; el('createName').readOnly = true; const ta = el('createScript'); ta.value = ''; ta.style.minHeight = '60vh'; ta.style.maxHeight = '70vh'; ta.style.overflowY = 'auto'; ta.style.whiteSpace = 'pre'; ta.style.fontFamily = 'monospace'; ta.style.fontSize = '13px'; setTimeout(() => { ta.value = res.rawScript; ta.scrollTop = 0; window._createScriptSnapshot = res.rawScript; }, 0); el('createModal').style.display='flex'; } else { showNotification('获取 Worker 脚本失败', 'error'); debugOut(res); } }
+    async function editWorker(name){ let accountId = getActiveCreds().accountId; if (!accountId) { const accounts = await api('list-accounts'); accountId = accounts.result?.[0]?.id; } const res = await api('get-worker-script', { accountId, scriptName: name }); if (res && res.rawScript !== undefined) { el('createName').value = name; el('createName').readOnly = true; const ta = el('createScript'); ta.value = ''; ta.style.minHeight = '60vh'; ta.style.maxHeight = '70vh'; ta.style.overflowY = 'auto'; ta.style.whiteSpace = 'pre'; ta.style.fontFamily = 'monospace'; ta.style.fontSize = '13px'; setTimeout(() => { ta.value = res.rawScript; ta.scrollTop = 0; window._createScriptSnapshot = res.rawScript; }, 0); el('createModal').style.display='flex'; } else { showNotification('获取 Worker 脚本失败', 'error'); debugOut(res); } }
     async function confirmCreate(){ const name = el('createName').value.trim(); const script = el('createScript').value; if (!name) return showNotification('请输入 Worker 名称', 'error'); const accountId = (await api('list-accounts')).result?.[0]?.id; const res = await api('deploy-worker', { accountId, scriptName: name, scriptSource: script, metadataBindings: [] }); if (res && res.success) { showNotification(res.message || 'Worker 部署成功'); window._createScriptSnapshot = script; el('createModal').style.display='none'; setTimeout(refreshWorkers, 800); } else { showNotification(res.error || '部署失败', 'error'); debugOut(res); } }
     function closeCreate(){ const current = el('createScript').value; const nameVal = el('createName').value; const isNew = !el('createName').readOnly; const hasChanged = current !== window._createScriptSnapshot || (isNew && nameVal.trim() !== ''); if (hasChanged) { if (!confirm('有未保存的更改，确定要关闭吗？')) return; } el('createModal').style.display='none'; }
     async function deleteWorker(name){ if (!confirm('确定要删除 Worker: '+name+' 吗？')) return; const accountId = (await api('list-accounts')).result?.[0]?.id; const res = await api('delete-worker', { accountId, scriptName: name }); if (res && res.success) { showNotification(res.message || 'Worker 删除成功'); setTimeout(refreshWorkers, 600); } else { showNotification(res.error || '删除失败', 'error'); debugOut(res); } }
@@ -2659,7 +2739,7 @@ window.refreshPagesManager=refreshPagesManager;window.deletePagesProject=deleteP
     let currentWorkerForEnv = '';
     async function loadEnvVars(scriptName) { currentWorkerForEnv = scriptName; const accountId = localStorage.getItem('cf_accountId'); const res = await api('get-worker-variables', { accountId, scriptName }); el('envRows').innerHTML = ''; if (res && res.result && res.result.vars) { res.result.vars.forEach(v => { let value = v.value || v.text || ''; if (v.type === 'json' || (value && value.startsWith('{') && value.endsWith('}'))) { try { value = JSON.stringify(JSON.parse(value), null, 2); } catch (e) {} } addEnvRow(v.name, v.type || 'plain_text', value); }); } else { addEnvRow(); } }
     function addEnvRow(name='',type='plain_text',value=''){ const rows=el('envRows'); const id='r_'+Math.random().toString(36).slice(2,8); const div=document.createElement('div'); div.id=id; div.style.display='flex'; div.style.gap='8px'; div.style.marginTop='8px'; div.style.alignItems='center'; div.innerHTML = \`<input class="input env-name" placeholder="变量名" value="\${name?escapeHtml(name):''}" style="flex:2"><select class="input env-type" style="width:140px"><option value="plain_text">文本</option><option value="secret_text">密钥</option><option value="json">JSON</option></select><textarea class="input env-value" placeholder="变量值" style="flex:3;min-height:60px;resize:vertical">\${value?escapeHtml(value):''}</textarea><button class="btn danger">删除</button>\`; rows.appendChild(div); div.querySelector('button').addEventListener('click', ()=>div.remove()); div.querySelector('select').value=type; }
-    async function saveEnv(){ const script = currentWorkerForEnv; if(!script) return showNotification('请选择 Worker 名称', 'error'); const rows = Array.from(el('envRows').children); const vars=[]; for(const row of rows){ const name = row.querySelector('.env-name').value.trim(); const type = row.querySelector('.env-type').value; let value = row.querySelector('.env-value').value; if(!name) continue; if(type==='json'){ try{ JSON.parse(value); }catch{ showNotification('JSON 变量格式错误: '+name, 'error'); return; } } vars.push({ name, value, type }); } const accountId = localStorage.getItem('cf_accountId') || (await api('list-accounts')).result?.[0]?.id; const res = await api('put-worker-variables', { accountId, scriptName: script, variables: vars }); if (res && res.success) { showNotification(res.message || '环境变量保存成功'); el('envModal').style.display='none'; refreshWorkers(); } else { showNotification(res.error || '保存失败', 'error'); debugOut(res); } }
+    async function saveEnv(){ const script = currentWorkerForEnv; if(!script) return showNotification('请选择 Worker 名称', 'error'); const rows = Array.from(el('envRows').children); const vars=[]; for(const row of rows){ const name = row.querySelector('.env-name').value.trim(); const type = row.querySelector('.env-type').value; let value = row.querySelector('.env-value').value; if(!name) continue; if(type==='json'){ try{ JSON.parse(value); }catch{ showNotification('JSON 变量格式错误: '+name, 'error'); return; } } vars.push({ name, value, type }); } const accountId = getActiveCreds().accountId || localStorage.getItem('cf_accountId') || (await api('list-accounts')).result?.[0]?.id; const res = await api('put-worker-variables', { accountId, scriptName: script, variables: vars }); if (res && res.success) { showNotification(res.message || '环境变量保存成功'); el('envModal').style.display='none'; refreshWorkers(); } else { showNotification(res.error || '保存失败', 'error'); debugOut(res); } }
     function closeEnvModal(){ el('envModal').style.display='none'; }
     
     async function refreshKVNamespaces() { const accountId = localStorage.getItem('cf_accountId'); if (!accountId) return; const res = await api('list-kv-namespaces', { accountId }); const namespaces = res.result || []; el('kvNamespacesList').innerHTML = ''; if (namespaces.length === 0) { el('kvNamespacesList').innerHTML = '<div style="text-align:center;padding:20px;color:#6b7280">暂无 KV 命名空间</div>'; return; } namespaces.forEach(ns => { const div = document.createElement('div'); div.className = 'kv-item'; div.innerHTML = \`<div style="flex:1"><div style="font-weight:600">\${ns.title || ns.id}</div><div class="small">ID: \${ns.id}</div></div><div class="btns"><button class="btn" data-id="\${ns.id}" data-act="view">查看键值</button><button class="btn danger" data-id="\${ns.id}" data-act="delete">删除</button></div>\`; el('kvNamespacesList').appendChild(div); }); Array.from(el('kvNamespacesList').querySelectorAll('.btn')).forEach(btn => { btn.addEventListener('click', function() { const namespaceId = this.dataset.id; const act = this.dataset.act; if (act === 'view') viewKVNamespace(namespaceId); if (act === 'delete') deleteKVNamespace(namespaceId); }); }); }
@@ -2694,7 +2774,7 @@ window.refreshPagesManager=refreshPagesManager;window.deletePagesProject=deleteP
     async function saveSubdomain() { const subdomain = el('subdomainInput').value.trim(); if (!subdomain) return showNotification('请输入子域名', 'error'); const accountId = localStorage.getItem('cf_accountId'); const res = await api('put-workers-subdomain', { accountId, subdomain }); if (res && res.success) { showNotification(res.message || 'Workers 域名设置成功'); setTimeout(refreshWorkers, 1000); } else { showNotification(res.error || '设置保存失败', 'error'); } }
     
     let currentBindType = 'kv';
-    async function refreshBindList(){ const type = el('bindType').value; currentBindType = type; const accountId = localStorage.getItem('cf_accountId') || (await api('list-accounts')).result?.[0]?.id; if (!accountId) { el('bindSelect').innerHTML='<option>无 account</option>'; return; } el('bindSelect').innerHTML = '<option value="">加载中...</option>'; try { if (type==='kv') { const kv = await api('list-kv-namespaces', { accountId }); const arr = kv.result || []; el('bindSelect').innerHTML=''; if(arr.length) { arr.forEach(ns=>{ const opt=document.createElement('option'); opt.value=ns.id; opt.textContent=(ns.title||ns.name||ns.id) + ' (' + ns.id + ')'; el('bindSelect').appendChild(opt); }); } else { el('bindSelect').innerHTML='<option value="">未找到 KV 命名空间</option>'; } } else { const d1 = await api('list-d1', { accountId }); const arr = d1.result || []; el('bindSelect').innerHTML=''; if(arr.length) { arr.forEach(db=>{ const id=db.uuid||db.id; const opt=document.createElement('option'); opt.value=id; opt.textContent=(db.name||db.uuid||db.id) + ' (' + id + ')'; el('bindSelect').appendChild(opt); }); } else { el('bindSelect').innerHTML='<option value="">未找到 D1 数据库</option>'; } } } catch (error) { console.error('刷新绑定列表失败:', error); el('bindSelect').innerHTML='<option value="">加载失败</option>'; } }
+    async function refreshBindList(){ const type = el('bindType').value; currentBindType = type; const accountId = getActiveCreds().accountId || localStorage.getItem('cf_accountId') || (await api('list-accounts')).result?.[0]?.id; if (!accountId) { el('bindSelect').innerHTML='<option>无 account</option>'; return; } el('bindSelect').innerHTML = '<option value="">加载中...</option>'; try { if (type==='kv') { const kv = await api('list-kv-namespaces', { accountId }); const arr = kv.result || []; el('bindSelect').innerHTML=''; if(arr.length) { arr.forEach(ns=>{ const opt=document.createElement('option'); opt.value=ns.id; opt.textContent=(ns.title||ns.name||ns.id) + ' (' + ns.id + ')'; el('bindSelect').appendChild(opt); }); } else { el('bindSelect').innerHTML='<option value="">未找到 KV 命名空间</option>'; } } else { const d1 = await api('list-d1', { accountId }); const arr = d1.result || []; el('bindSelect').innerHTML=''; if(arr.length) { arr.forEach(db=>{ const id=db.uuid||db.id; const opt=document.createElement('option'); opt.value=id; opt.textContent=(db.name||db.uuid||db.id) + ' (' + id + ')'; el('bindSelect').appendChild(opt); }); } else { el('bindSelect').innerHTML='<option value="">未找到 D1 数据库</option>'; } } } catch (error) { console.error('刷新绑定列表失败:', error); el('bindSelect').innerHTML='<option value="">加载失败</option>'; } }
     function closeBindModal(){ el('bindModal').style.display='none'; }
     async function confirmBind(){ const type = currentBindType; const ref = el('bindSelect').value; const bindName = el('bindName').value.trim() || (type==='kv'?'MY_KV':'MY_DB'); const script = el('createName').value.trim(); if (!script) return showNotification('请选择 Worker 名称', 'error'); if (!ref) return showNotification('请选择要绑定的资源', 'error'); const accountId = localStorage.getItem('cf_accountId'); let currentScript; let currentBindings = []; try { const scriptRes = await api('get-worker-script', { accountId, scriptName: script }); if (scriptRes && scriptRes.rawScript) { currentScript = scriptRes.rawScript; const scriptInfoRes = await api('get-worker-variables', { accountId, scriptName: script }); if (scriptInfoRes && scriptInfoRes.result && scriptInfoRes.result.vars) { const fullScriptRes = await fetch(\`/api\`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action: 'get-worker-script', email: getActiveCreds().email, key: getActiveCreds().key, accountId: accountId, scriptName: script }) }); const fullScriptData = await fullScriptRes.json(); if (fullScriptData && fullScriptData.rawScript) { try { const scriptJson = JSON.parse(fullScriptData.rawScript); if (scriptJson.result && scriptJson.result.bindings) { currentBindings = scriptJson.result.bindings; } } catch (e) { } } } } else { currentScript = DEFAULT_WORKER_SCRIPT; } } catch (error) { console.error('获取当前脚本失败:', error); currentScript = DEFAULT_WORKER_SCRIPT; } const newBinding = (type==='kv') ? { type:'kv_namespace', name:bindName, namespace_id:ref } : { type:'d1', name:bindName, id:ref }; const otherBindings = currentBindings.filter(b => { if (b.type === 'plain_text' || b.type === 'secret_text') return true; return !(b.type === newBinding.type && b.name === newBinding.name); }); const finalBindings = [...otherBindings, newBinding]; const res = await api('deploy-worker', { accountId, scriptName: script, scriptSource: currentScript, metadataBindings: finalBindings }); if (res && res.success) { showNotification('资源绑定成功'); el('bindModal').style.display='none'; setTimeout(refreshWorkers,800); } else { showNotification(res.error || '绑定失败', 'error'); debugOut(res); } }
 
@@ -2704,7 +2784,8 @@ window.refreshPagesManager=refreshPagesManager;window.deletePagesProject=deleteP
         location.href = '/login'; 
         return; 
       }
-      el('acctInfo').textContent = creds.email;
+      const curAcc = loadSaved().find(a => (a.accountId || a.email) === (creds.accountId || creds.email));
+      el('acctInfo').textContent = (curAcc && curAcc.alias) ? curAcc.alias : creds.email;
       setTimeout(() => { try { refreshWorkers(); } catch(e) { console.log(e); } }, 300);
     })();
 
